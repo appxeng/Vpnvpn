@@ -1,0 +1,81 @@
+{
+ "name": "Build APK",
+ "on": {
+  "workflow_dispatch": null
+ },
+ "jobs": {
+  "build": {
+   "runs-on": "ubuntu-latest",
+   "steps": [
+    {
+     "uses": "actions/checkout@v4"
+    },
+    {
+     "name": "Locate project",
+     "run": "Z=\"$(ls -1 ./*.zip 2>/dev/null | head -1)\"\nif [ -n \"$Z\" ]; then\n  echo \"Found zip: $Z\"\n  unzip -q \"$Z\" -d work\n  S=\"$(find \"$PWD/work\" -name settings.gradle.kts | head -1)\"\nelse\n  S=\"$(find \"$PWD\" -maxdepth 2 -name settings.gradle.kts | head -1)\"\nfi\nif [ -z \"$S\" ]; then\n  echo \"::error::پروژه پیدا نشد. فایل zip پروژه (MyVPN.zip) باید در ریشهٔ مخزن آپلود شود.\"\n  echo \"--- فایل‌های مخزن ---\"; ls -la; exit 1\nfi\nP=\"$(dirname \"$S\")\"\necho \"PROJECT=$P\" >> \"$GITHUB_ENV\"\necho \"Project dir: $P\"; ls -la \"$P\"; ls -la \"$P/app\" || true\n"
+    },
+    {
+     "uses": "actions/setup-java@v4",
+     "with": {
+      "distribution": "temurin",
+      "java-version": 17
+     }
+    },
+    {
+     "uses": "actions/setup-go@v5",
+     "with": {
+      "go-version": "stable"
+     }
+    },
+    {
+     "name": "Restore libv2ray.aar cache",
+     "id": "aar",
+     "uses": "actions/cache/restore@v4",
+     "with": {
+      "path": "aar-cache",
+      "key": "libv2ray-aar-v1"
+     }
+    },
+    {
+     "name": "Build libv2ray.aar",
+     "if": "steps.aar.outputs.cache-hit != 'true'",
+     "run": "git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite /tmp/xraylib\ncd /tmp/xraylib\ngo install golang.org/x/mobile/cmd/gomobile@latest\ngo install golang.org/x/mobile/cmd/gobind@latest\nexport PATH=\"$PATH:$(go env GOPATH)/bin\"\nexport ANDROID_NDK_HOME=\"${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}\"\ngomobile init\ngo mod tidy -v\ngomobile bind -v -androidapi 24 -trimpath -ldflags='-s -w -buildid= -checklinkname=0' ./\nmkdir -p \"$GITHUB_WORKSPACE/aar-cache\"\ncp libv2ray.aar \"$GITHUB_WORKSPACE/aar-cache/\"\n"
+    },
+    {
+     "name": "Save libv2ray.aar cache",
+     "if": "steps.aar.outputs.cache-hit != 'true'",
+     "uses": "actions/cache/save@v4",
+     "with": {
+      "path": "aar-cache",
+      "key": "libv2ray-aar-v1"
+     }
+    },
+    {
+     "name": "Install aar into project",
+     "run": "mkdir -p \"$PROJECT/app/libs\"\ncp aar-cache/libv2ray.aar \"$PROJECT/app/libs/\"\nls -la \"$PROJECT/app/libs\"\n"
+    },
+    {
+     "uses": "gradle/actions/setup-gradle@v4",
+     "with": {
+      "gradle-version": "8.9"
+     }
+    },
+    {
+     "name": "Ensure gradle.properties",
+     "run": "touch \"$PROJECT/gradle.properties\"\ngrep -q '^android.useAndroidX' \"$PROJECT/gradle.properties\" || echo 'android.useAndroidX=true' >> \"$PROJECT/gradle.properties\"\ngrep -q '^org.gradle.jvmargs' \"$PROJECT/gradle.properties\" || echo 'org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8' >> \"$PROJECT/gradle.properties\"\ncat \"$PROJECT/gradle.properties\"\n"
+    },
+    {
+     "name": "Build APK",
+     "run": "set +e\ngradle -p \"$PROJECT\" :app:assembleDebug --no-daemon > build.log 2>&1\ncode=$?\nif [ $code -ne 0 ]; then\n  # خلاصهٔ خطا در بخش Annotations بالای صفحهٔ اجرا نمایش داده می‌شود\n  MSG=\"$(grep -E '^e: |What went wrong|Execution failed|Could not |error:|AAPT|Unresolved|FAILURE' -A3 build.log | head -40 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\\n/%0A/g')\"\n  echo \"::error title=Gradle error::${MSG}\"\n  echo \"=========== آخرین خطوط لاگ ===========\"\n  tail -n 60 build.log\n  exit $code\nfi\ntail -n 5 build.log\n"
+    },
+    {
+     "uses": "actions/upload-artifact@v4",
+     "with": {
+      "name": "MyVPN-apk",
+      "path": "${{ env.PROJECT }}/app/build/outputs/apk/debug/*.apk"
+     }
+    }
+   ]
+  }
+ }
+}
